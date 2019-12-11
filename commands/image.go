@@ -11,8 +11,8 @@ import (
 	pb "github.com/projecteru2/core/rpc/gen"
 	"github.com/sethgrid/curse"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/net/context"
 	cli "github.com/urfave/cli/v2"
+	"golang.org/x/net/context"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -111,7 +111,11 @@ func ImageCommand() *cli.Command {
 
 func buildImage(c *cli.Context) error {
 	opts := generateBuildOpts(c)
+
+	// KS 链接Eru Core Client
 	client := setupAndGetGRPCConnection().GetRPCClient()
+
+	// KS 让 ERU core build image
 	resp, err := client.BuildImage(context.Background(), opts)
 	if err != nil {
 		return cli.Exit(err, -1)
@@ -264,11 +268,18 @@ func generateBuildOpts(c *cli.Context) *pb.BuildImageOptions {
 			b.Version = utils.ParseEnvValue(b.Version)
 		}
 	} else {
+
+		// KS
+		//  在 eru-cli image build --raw --tag centos --name virtualdev dockerfiles/CentOS7  这个命令里
+		//  c.Args().First() 可以拿到 dockerfiles/CentOS7
+		//  似乎是把这个目录里面的所有东西打包了。。。。 XD
 		path := c.Args().First()
 		data, err := dockerengine.CreateTarStream(path)
 		if err != nil {
 			log.Fatal("[Build] no path")
 		}
+
+		// KS tar就是个bytes 信息流了，以 BuildImageOptions.Tar 的形式返回上层
 		tar, err = ioutil.ReadAll(data)
 		if err != nil {
 			log.Fatal("[Build] create tar stream failed")
