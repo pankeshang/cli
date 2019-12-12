@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"context"
 
 	"github.com/projecteru2/cli/utils"
 	"github.com/projecteru2/core/cluster"
@@ -273,6 +273,7 @@ func ContainerCommand() *cli.Command {
 					},
 				},
 			},
+			// KS eru-cli --eru 10.22.12.87:5001 container deploy
 			&cli.Command{
 				Name:      "deploy",
 				Usage:     "deploy containers by params",
