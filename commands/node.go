@@ -7,9 +7,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/jedib0t/go-pretty/table"
 	"github.com/projecteru2/core/cluster"
-
 	pb "github.com/projecteru2/core/rpc/gen"
 	log "github.com/sirupsen/logrus"
 	cli "github.com/urfave/cli/v2"
@@ -22,54 +23,63 @@ func NodeCommand() *cli.Command {
 		Name:  "node",
 		Usage: "node commands",
 		Subcommands: []*cli.Command{
-			&cli.Command{
+			{
 				Name:      "get",
 				Usage:     "get a node",
 				ArgsUsage: nodeArgsUsage,
 				Action:    getNode,
-				Flags: []cli.Flag{
-					&cli.StringFlag{
-						Name:  "podname",
-						Usage: "which podname",
-					},
-				},
 			},
-			&cli.Command{
+			{
 				Name:      "remove",
 				Usage:     "remove a node",
 				ArgsUsage: nodeArgsUsage,
 				Action:    removeNode,
 			},
-			&cli.Command{
+			{
 				Name:      "containers",
 				Usage:     "list node containers",
 				ArgsUsage: nodeArgsUsage,
 				Action:    listNodeContainers,
 			},
-			&cli.Command{
+			{
 				Name:      "up",
 				Usage:     "set node up",
 				ArgsUsage: nodeArgsUsage,
 				Action:    setNodeUp,
 			},
-			&cli.Command{
-				Name:      "down",
-				Usage:     "set node down",
+			{
+				Name:  "down",
+				Usage: "set node down",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "check",
+						Usage: "check node containers are online or not",
+					},
+					&cli.IntFlag{
+						Name:  "check-timeout",
+						Usage: "check node timeout",
+						Value: 20,
+					},
+				},
 				ArgsUsage: nodeArgsUsage,
 				Action:    setNodeDown,
 			},
-			&cli.Command{
+			{
 				Name:      "resource",
 				Usage:     "check node resource",
 				ArgsUsage: nodeArgsUsage,
 				Action:    nodeResource,
 			},
-			&cli.Command{
+			{
 				Name:      "set",
 				Usage:     "set node resource",
 				ArgsUsage: nodeArgsUsage,
 				Action:    setNode,
 				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "mark-containers-down",
+						Usage: "mark containers down",
+					},
 					&cli.StringFlag{
 						Name:  "delta-memory",
 						Usage: "memory changes like -1M or 1G, support K, M, G, T",
@@ -86,6 +96,10 @@ func NodeCommand() *cli.Command {
 						Name:  "delta-numa-memory",
 						Usage: "numa memory changes, can set multiple times, like -1M or 1G, support K, M, G, T",
 					},
+					&cli.StringFlag{
+						Name:  "delta-volume",
+						Usage: `volume changed in string, like "/data0:-1G,/data1:1G"`,
+					},
 					&cli.StringSliceFlag{
 						Name:  "numa-cpu",
 						Usage: "numa cpu list, can set multiple times, use comma separated",
@@ -96,7 +110,7 @@ func NodeCommand() *cli.Command {
 					},
 				},
 			},
-			&cli.Command{
+			{
 				Name:      "add",
 				Usage:     "add node",
 				ArgsUsage: "podname",
@@ -158,6 +172,10 @@ func NodeCommand() *cli.Command {
 						Name:  "numa-memory",
 						Usage: "numa memory, can set multiple times. if not set, it will count numa-cpu groups, and divided by total memory",
 					},
+					&cli.StringSliceFlag{
+						Name:  "volumes",
+						Usage: `device volumes, can set multiple times. e.g. "--volumes /data:100G" `,
+					},
 				},
 			},
 		},
@@ -179,9 +197,34 @@ func listNodeContainers(c *cli.Context) error {
 	if err != nil {
 		return cli.Exit(err, -1)
 	}
-	for _, container := range resp.Containers {
-		log.Infof("%s: %s", container.Name, container.Id)
-		log.Infof("Pod %s, Node %s, CPU %v, Quota %v, Memory %v, Privileged %v", container.Podname, container.Nodename, container.Cpu, container.Quota, container.Memory, container.Privileged)
+
+	containers := resp.Containers
+	if c.Bool("pretty") {
+		t := table.NewWriter()
+		t.SetOutputMirror(os.Stdout)
+		t.AppendHeader(table.Row{"Name/ID", "Information"})
+		for _, c := range containers {
+			rows := [][]string{
+				{c.Name, c.Id},
+				{
+					fmt.Sprintf("Pod: %s", c.Podname),
+					fmt.Sprintf("Node: %s", c.Nodename),
+					fmt.Sprintf("CPU: %v", c.Cpu),
+					fmt.Sprintf("Quota: %v", c.Quota),
+					fmt.Sprintf("Memory: %v", c.Memory),
+					fmt.Sprintf("Privileged: %v", c.Privileged),
+				},
+			}
+			t.AppendRows(toTableRows(rows))
+			t.AppendSeparator()
+		}
+		t.SetStyle(table.StyleLight)
+		t.Render()
+	} else {
+		for _, container := range containers {
+			log.Infof("%s: %s", container.Name, container.Id)
+			log.Infof("Pod %s, Node %s, CPU %v, Quota %v, Memory %v, Privileged %v", container.Podname, container.Nodename, container.Cpu, container.Quota, container.Memory, container.Privileged)
+		}
 	}
 	return nil
 }
@@ -193,7 +236,7 @@ func getNode(c *cli.Context) error {
 	}
 	name := c.Args().First()
 
-	node, err := client.GetNodeByName(context.Background(), &pb.GetNodeOptions{
+	node, err := client.GetNode(context.Background(), &pb.GetNodeOptions{
 		Nodename: name,
 	})
 	if err != nil {
@@ -205,10 +248,19 @@ func getNode(c *cli.Context) error {
 		log.Infof("%s: %s", k, v)
 	}
 	log.Infof("CPU Used: %.2f", node.GetCpuUsed())
-	log.Infof("Memory Used: %d bytes", node.GetMemoryUsed())
+	log.Infof("Memory Used: %d/%d bytes", node.GetMemoryUsed(), node.GetInitMemory())
 	for nodeID, memory := range node.GetNumaMemory() {
 		log.Infof("Memory Node: %s Capacity %d bytes", nodeID, memory)
 	}
+
+	initVolume := node.GetInitVolume()
+	totalCap := int64(0)
+	for volume, freeSpace := range node.GetVolume() {
+		capacity := initVolume[volume]
+		totalCap += capacity
+		log.Infof("  Volume %s: Used %d/%d bytes", volume, capacity-freeSpace, capacity)
+	}
+	log.Infof("Volume Used: %d/%d bytes", node.GetVolumeUsed(), totalCap)
 
 	if node.GetInitStorage() > 0 {
 		log.Infof("Storage Used: %d bytes", node.GetStorageUsed())
@@ -224,16 +276,8 @@ func removeNode(c *cli.Context) error {
 		return cli.Exit(err, -1)
 	}
 	name := c.Args().First()
-	node, err := client.GetNodeByName(context.Background(), &pb.GetNodeOptions{
-		Nodename: name,
-	})
-	if err != nil {
-		return cli.Exit(err, -1)
-	}
-
 	_, err = client.RemoveNode(context.Background(), &pb.RemoveNodeOptions{
-		Podname:  node.Podname,
-		Nodename: node.Name,
+		Nodename: name,
 	})
 	if err != nil {
 		return cli.Exit(err, -1)
@@ -248,16 +292,9 @@ func setNode(c *cli.Context) error {
 		return cli.Exit(err, -1)
 	}
 	name := c.Args().First()
-
-	node, err := client.GetNodeByName(context.Background(), &pb.GetNodeOptions{
-		Nodename: name,
-	})
-	if err != nil {
-		return cli.Exit(err, -1)
-	}
-
 	numaMemoryList := c.StringSlice("delta-numa-memory")
 	numaMemory := map[string]int64{}
+	markContainersDown := c.Bool("mark-containers-down")
 
 	for index, memoryStr := range numaMemoryList {
 		var memory int64
@@ -302,6 +339,22 @@ func setNode(c *cli.Context) error {
 		}
 	}
 
+	volumeMap := map[string]int64{}
+	deltaVolume := c.String("delta-volume")
+	if deltaVolume != "" {
+		for _, volume := range strings.Split(deltaVolume, ",") {
+			parts := strings.Split(volume, ":")
+			if len(parts) != 2 {
+				return cli.Exit(fmt.Errorf("invalid volume"), -1)
+			}
+			delta, err := parseRAMInHuman(parts[1])
+			if err != nil {
+				return cli.Exit(err, -1)
+			}
+			volumeMap[parts[0]] = delta
+		}
+	}
+
 	var deltaMemory int64
 	if deltaMemory, err = parseRAMInHuman(c.String("delta-memory")); err != nil {
 		return cli.Exit(err, -1)
@@ -313,15 +366,16 @@ func setNode(c *cli.Context) error {
 	}
 
 	_, err = client.SetNode(context.Background(), &pb.SetNodeOptions{
-		Podname:         node.Podname,
-		Nodename:        node.Name,
+		Nodename:        name,
 		Status:          cluster.KeepNodeStatus,
 		DeltaCpu:        cpuMap,
 		DeltaMemory:     deltaMemory,
 		DeltaStorage:    deltaStorage,
 		DeltaNumaMemory: numaMemory,
+		DeltaVolume:     volumeMap,
 		Numa:            numa,
 		Labels:          labels,
+		ContainersDown:  markContainersDown,
 	})
 	if err != nil {
 		return cli.Exit(err, -1)
@@ -336,17 +390,8 @@ func setNodeUp(c *cli.Context) error {
 		return cli.Exit(err, -1)
 	}
 	name := c.Args().First()
-
-	node, err := client.GetNodeByName(context.Background(), &pb.GetNodeOptions{
-		Nodename: name,
-	})
-	if err != nil {
-		return cli.Exit(err, -1)
-	}
-
 	_, err = client.SetNode(context.Background(), &pb.SetNodeOptions{
-		Podname:  node.Podname,
-		Nodename: node.Name,
+		Nodename: name,
 		Status:   cluster.NodeUp,
 	})
 	if err != nil {
@@ -362,23 +407,27 @@ func setNodeDown(c *cli.Context) error {
 		return cli.Exit(err, -1)
 	}
 	name := c.Args().First()
-
-	node, err := client.GetNodeByName(context.Background(), &pb.GetNodeOptions{
-		Nodename: name,
-	})
-	if err != nil {
-		return cli.Exit(err, -1)
+	do := true
+	if c.Bool("check") {
+		t := c.Int("check-timeout")
+		timeout, cancel := context.WithTimeout(c.Context, time.Duration(t)*time.Second)
+		defer cancel()
+		if _, err := client.GetNodeResource(timeout, &pb.GetNodeOptions{Nodename: name}); err == nil {
+			log.Warn("[SetNode] node is not down")
+			do = false
+		}
 	}
 
-	_, err = client.SetNode(context.Background(), &pb.SetNodeOptions{
-		Podname:  node.Podname,
-		Nodename: node.Name,
-		Status:   cluster.NodeDown,
-	})
-	if err != nil {
-		return cli.Exit(err, -1)
+	if do {
+		_, err = client.SetNode(context.Background(), &pb.SetNodeOptions{
+			Nodename: name,
+			Status:   cluster.NodeDown,
+		})
+		if err != nil {
+			return cli.Exit(err, -1)
+		}
+		log.Infof("[SetNode] node %s down", name)
 	}
-	log.Infof("[SetNode] node %s down", name)
 	return nil
 }
 
@@ -508,6 +557,21 @@ func addNode(c *cli.Context) error {
 		numaMemory[nodeID] = memory
 	}
 
+	volumes := map[string]int64{}
+
+	for _, volume := range c.StringSlice("volumes") {
+		parts := strings.Split(volume, ":")
+		if len(parts) != 2 {
+			return cli.Exit(fmt.Errorf("invalid volume"), -1)
+		}
+
+		capacity, err := parseRAMInHuman(parts[1])
+		if err != nil {
+			return cli.Exit(err, -1)
+		}
+		volumes[parts[0]] = capacity
+	}
+
 	labels := map[string]string{}
 	for _, d := range c.StringSlice("label") {
 		parts := strings.SplitN(d, "=", 2)
@@ -536,6 +600,7 @@ func addNode(c *cli.Context) error {
 		Labels:     labels,
 		Numa:       numa,
 		NumaMemory: numaMemory,
+		VolumeMap:  volumes,
 	})
 	if err != nil {
 		return cli.Exit(err, -1)
@@ -553,27 +618,36 @@ func nodeResource(c *cli.Context) error {
 	if err != nil {
 		return cli.Exit(err, -1)
 	}
-	nodename := c.Args().First()
-
-	node, err := client.GetNodeByName(context.Background(), &pb.GetNodeOptions{
-		Nodename: nodename,
-	})
+	name := c.Args().First()
+	r, err := client.GetNodeResource(context.Background(), &pb.GetNodeOptions{Nodename: name})
 	if err != nil {
 		return cli.Exit(err, -1)
 	}
 
-	r, err := client.GetNodeResource(context.Background(), &pb.GetNodeOptions{
-		Podname: node.Podname, Nodename: node.Name,
-	})
-	if err != nil {
-		return cli.Exit(err, -1)
-	}
-
-	log.Infof("[NodeResource] Node %s", r.Name)
-	log.Infof("[NodeResource] Cpu %.2f%% Memory %.2f%% Storage %.2f%%", r.CpuPercent*100, r.MemoryPercent*100, r.StoragePercent*100)
-	if !r.Verification {
-		for _, detail := range r.Details {
-			log.Warnf("[NodeResource] Resource diff %s", detail)
+	if c.Bool("pretty") {
+		t := table.NewWriter()
+		t.SetOutputMirror(os.Stdout)
+		t.AppendHeader(table.Row{"Name", "Resource"})
+		rows := [][]string{
+			{r.Name},
+			{
+				fmt.Sprintf("Cpu: %.2f%%", r.CpuPercent*100),
+				fmt.Sprintf("Memory: %.2f%%", r.MemoryPercent*100),
+				fmt.Sprintf("Storage: %.2f%%", r.StoragePercent*100),
+				fmt.Sprintf("Volume: %.2f%%", r.VolumePercent*100),
+			},
+		}
+		t.AppendRows(toTableRows(rows))
+		t.AppendSeparator()
+		t.SetStyle(table.StyleLight)
+		t.Render()
+	} else {
+		log.Infof("[NodeResource] Node %s", r.Name)
+		log.Infof("[NodeResource] Cpu %.2f%% Memory %.2f%% Storage %.2f%% Volume %.2f%%", r.CpuPercent*100, r.MemoryPercent*100, r.StoragePercent*100, r.VolumePercent*100)
+		if !r.Verification {
+			for _, detail := range r.Details {
+				log.Warnf("[NodeResource] Resource diff %s", detail)
+			}
 		}
 	}
 	return nil

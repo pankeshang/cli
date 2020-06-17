@@ -22,7 +22,7 @@ func ImageCommand() *cli.Command {
 		Name:  "image",
 		Usage: "image commands",
 		Subcommands: []*cli.Command{
-			&cli.Command{
+			{
 				Name:      "build",
 				Usage:     "build image",
 				ArgsUsage: specFileURI,
@@ -38,6 +38,10 @@ func ImageCommand() *cli.Command {
 					&cli.BoolFlag{
 						Name:  "raw",
 						Usage: "build image from dir",
+					},
+					&cli.BoolFlag{
+						Name:  "exist",
+						Usage: "build image from exist",
 					},
 					&cli.StringFlag{
 						Name:        "user",
@@ -58,7 +62,7 @@ func ImageCommand() *cli.Command {
 				},
 				Action: buildImage,
 			},
-			&cli.Command{
+			{
 				Name:      "cache",
 				Usage:     "cache image",
 				ArgsUsage: "name of images",
@@ -79,7 +83,7 @@ func ImageCommand() *cli.Command {
 				},
 				Action: cacheImage,
 			},
-			&cli.Command{
+			{
 				Name:      "remove",
 				Usage:     "remove image",
 				ArgsUsage: "name of images",
@@ -238,10 +242,22 @@ func generateBuildOpts(c *cli.Context) *pb.BuildImageOptions {
 		log.Fatal("[Build] no spec")
 	}
 	raw := c.Bool("raw")
+	exist := c.Bool("exist")
+	if raw && exist {
+		log.Fatal("[Build] mutually exclusive flag: raw or exist")
+	}
 	stopSignal := c.String("stop-signal")
+
 	var specs *pb.Builds
 	var tar []byte
-	if !raw {
+	var existID string
+	var buildMethod pb.BuildImageOptions_BuildMethod
+	if exist {
+		buildMethod = pb.BuildImageOptions_EXIST
+		existID = c.Args().First()
+
+	} else if !raw {
+		buildMethod = pb.BuildImageOptions_SCM
 		specURI := c.Args().First()
 		log.Debugf("[Build] Deploy %s", specURI)
 		var data []byte
@@ -267,12 +283,13 @@ func generateBuildOpts(c *cli.Context) *pb.BuildImageOptions {
 			b.StopSignal = stopSignal
 			b.Version = utils.ParseEnvValue(b.Version)
 		}
-	} else {
 
+	} else {
 		// KS
 		//  在 eru-cli image build --raw --tag centos --name virtualdev dockerfiles/CentOS7  这个命令里
 		//  c.Args().First() 可以拿到 dockerfiles/CentOS7
 		//  似乎是把这个目录里面的所有东西打包了。。。。 XD
+		buildMethod = pb.BuildImageOptions_RAW
 		path := c.Args().First()
 		data, err := dockerengine.CreateTarStream(path)
 		if err != nil {
@@ -298,12 +315,14 @@ func generateBuildOpts(c *cli.Context) *pb.BuildImageOptions {
 	}
 
 	opts := &pb.BuildImageOptions{
-		Name:   name,
-		User:   user,
-		Uid:    uid,
-		Tags:   tags,
-		Builds: specs,
-		Tar:    tar,
+		Name:        name,
+		User:        user,
+		Uid:         uid,
+		Tags:        tags,
+		BuildMethod: buildMethod,
+		Builds:      specs,
+		Tar:         tar,
+		ExistId:     existID,
 	}
 	return opts
 }

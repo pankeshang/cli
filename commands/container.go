@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jedib0t/go-pretty/table"
 	"github.com/projecteru2/cli/utils"
 	"github.com/projecteru2/core/cluster"
 	pb "github.com/projecteru2/core/rpc/gen"
-	coretypes "github.com/projecteru2/core/types"
 	coreutils "github.com/projecteru2/core/utils"
 	log "github.com/sirupsen/logrus"
 	cli "github.com/urfave/cli/v2"
@@ -25,19 +26,61 @@ func ContainerCommand() *cli.Command {
 		Name:  "container",
 		Usage: "container commands",
 		Subcommands: []*cli.Command{
-			&cli.Command{
+			{
 				Name:      "get",
 				Usage:     "get container(s)",
 				ArgsUsage: containerArgsUsage,
 				Action:    getContainers,
 			},
-			&cli.Command{
-				Name:      "log",
-				Usage:     "get container log",
+			{
+				Name:      "logs",
+				Usage:     "get container stream logs",
 				ArgsUsage: "containerID",
-				Action:    getContainerLog,
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "tail",
+						Value: "all",
+						Usage: "how many",
+					},
+				},
+				Action: getContainerLog,
 			},
-			&cli.Command{
+			{
+				Name:      "get-status",
+				Usage:     "get container status",
+				ArgsUsage: containerArgsUsage,
+				Action:    getContainersStatus,
+			},
+			{
+				Name:      "set-status",
+				Usage:     "set container status",
+				ArgsUsage: containerArgsUsage,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "running",
+						Usage: "Running",
+					},
+					&cli.BoolFlag{
+						Name:  "healthy",
+						Usage: "Healthy",
+					},
+					&cli.Int64Flag{
+						Name:  "ttl",
+						Usage: "ttl",
+						Value: 0,
+					},
+					&cli.StringSliceFlag{
+						Name:  "network",
+						Usage: "network, can set multiple times, name=ip",
+					},
+					&cli.StringFlag{
+						Name:  "extension",
+						Usage: "extension things",
+					},
+				},
+				Action: setContainersStatus,
+			},
+			{
 				Name:      "list",
 				Usage:     "list container(s) by appname",
 				ArgsUsage: "[appname]",
@@ -61,7 +104,7 @@ func ContainerCommand() *cli.Command {
 					},
 				},
 			},
-			&cli.Command{
+			{
 				Name:      "stop",
 				Usage:     "stop container(s)",
 				ArgsUsage: containerArgsUsage,
@@ -75,7 +118,7 @@ func ContainerCommand() *cli.Command {
 					},
 				},
 			},
-			&cli.Command{
+			{
 				Name:      "start",
 				Usage:     "start container(s)",
 				ArgsUsage: containerArgsUsage,
@@ -89,7 +132,7 @@ func ContainerCommand() *cli.Command {
 					},
 				},
 			},
-			&cli.Command{
+			{
 				Name:      "restart",
 				Usage:     "restart container(s)",
 				ArgsUsage: containerArgsUsage,
@@ -103,7 +146,7 @@ func ContainerCommand() *cli.Command {
 					},
 				},
 			},
-			&cli.Command{
+			{
 				Name:      "remove",
 				Usage:     "remove container(s)",
 				ArgsUsage: containerArgsUsage,
@@ -123,7 +166,7 @@ func ContainerCommand() *cli.Command {
 					},
 				},
 			},
-			&cli.Command{
+			{
 				Name:      "copy",
 				Usage:     "copy file(s) from container(s)",
 				ArgsUsage: copyArgsUsage,
@@ -137,7 +180,7 @@ func ContainerCommand() *cli.Command {
 					},
 				},
 			},
-			&cli.Command{
+			{
 				Name:      "send",
 				Usage:     "send file(s) to container(s)",
 				ArgsUsage: sendArgsUsage,
@@ -149,13 +192,13 @@ func ContainerCommand() *cli.Command {
 					},
 				},
 			},
-			&cli.Command{
+			{
 				Name:      "dissociate",
 				Usage:     "Dissociate container(s) from eru, return it resource but not remove it",
 				ArgsUsage: containerArgsUsage,
 				Action:    dissociateContainers,
 			},
-			&cli.Command{
+			{
 				Name:      "realloc",
 				Usage:     "realloc containers resource",
 				ArgsUsage: containerArgsUsage,
@@ -173,9 +216,21 @@ func ContainerCommand() *cli.Command {
 						Aliases: []string{"m"},
 						Value:   "1G",
 					},
+					&cli.StringFlag{
+						Name:  "volumes",
+						Usage: `volumes increment/decrement, like "AUTO:/data:rw:-1G,/tmp:/tmp"`,
+					},
+					&cli.BoolFlag{
+						Name:  "cpu-bind",
+						Usage: `bind fixed cpu(s) with container`,
+					},
+					&cli.BoolFlag{
+						Name:  "cpu-unbind",
+						Usage: `unbind the container relation with cpu`,
+					},
 				},
 			},
-			&cli.Command{
+			{
 				Name:      "exec",
 				Usage:     "run a command in a running container",
 				ArgsUsage: "containerID -- cmd1 cmd2 cmd3",
@@ -199,7 +254,7 @@ func ContainerCommand() *cli.Command {
 					},
 				},
 			},
-			&cli.Command{
+			{
 				Name:      "replace",
 				Usage:     "replace containers by params",
 				ArgsUsage: specFileURI,
@@ -274,7 +329,7 @@ func ContainerCommand() *cli.Command {
 				},
 			},
 			// KS eru-cli --eru 10.22.12.87:5001 container deploy
-			&cli.Command{
+			{
 				Name:      "deploy",
 				Usage:     "deploy containers by params",
 				ArgsUsage: specFileURI,
@@ -421,6 +476,103 @@ func removeContainers(c *cli.Context) error {
 	return nil
 }
 
+func renderContainer(container *pb.Container) {
+	log.Info("--------------------------------------")
+	log.Infof("%s: %s", container.Name, container.Id)
+	log.Infof("Pod: %s, Node: %s", container.Podname, container.Nodename)
+	log.Infof("CPU: %v, Quota: %v, Memory: %v, Storage: %v, Volume: %+v, VolumePlan: %+v, Privileged %v", container.Cpu, container.Quota, container.Memory, container.Storage, container.Volumes, container.VolumePlan, container.Privileged)
+	for networkName, IP := range container.Publish {
+		log.Infof("Publish at %s ip %s", networkName, IP)
+	}
+	if container.Status == nil {
+		log.Warn("Can't get container status, maybe dissociate with Eru")
+	} else {
+		log.Infof("Networks: %v", container.Status.Networks)
+	}
+}
+
+func prettyRenderContianers(containers []*pb.Container) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"Name/ID", "Pod", "Node", "Status", "Volume", "IP", "Networks"})
+
+	for _, c := range containers {
+		// publish ip
+		ips := []string{}
+		for networkName, IP := range c.Publish {
+			ips = append(ips, fmt.Sprintf("%s: %s", networkName, IP))
+		}
+
+		// networks
+		ns := []string{}
+		if c.Status != nil {
+			for name, ip := range c.Status.Networks {
+				ns = append(ns, fmt.Sprintf("%s: %s", name, ip))
+			}
+		}
+
+		rows := [][]string{
+			{c.Name, c.Id},
+			{c.Podname},
+			{c.Nodename},
+			{fmt.Sprintf("Quota: %f", c.Quota), fmt.Sprintf("Memory: %v", c.Memory), fmt.Sprintf("Storage: %v", c.Storage), fmt.Sprintf("Privileged: %v", c.Privileged)},
+			c.Volumes,
+			ips,
+			ns,
+		}
+		t.AppendRows(toTableRows(rows))
+		t.AppendSeparator()
+	}
+
+	t.SetStyle(table.StyleLight)
+	t.Render()
+}
+
+func renderContainerStatus(containerStatus *pb.ContainerStatus) {
+	log.Info("--------------------------------------")
+	log.Infof("ID: %s", containerStatus.Id)
+	log.Infof("Running: %v, Healthy: %v", containerStatus.Running, containerStatus.Healthy)
+	log.Infof("Networks: %v", containerStatus.Networks)
+	log.Infof("Extension %s", containerStatus.Extension)
+}
+
+func prettyRenderContainerStatus(containerStatuses []*pb.ContainerStatus) {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"ID", "Status", "Networks", "Extensions"})
+
+	for _, s := range containerStatuses {
+		// networks
+		ns := []string{}
+		for name, ip := range s.Networks {
+			ns = append(ns, fmt.Sprintf("%s: %s", name, ip))
+		}
+
+		// extensions
+		extensions := map[string]string{}
+		if err := json.Unmarshal(s.Extension, &extensions); err != nil {
+			log.Errorf("json unmarshal failed %v", err)
+			continue
+		}
+		es := []string{}
+		for k, v := range extensions {
+			es = append(es, fmt.Sprintf("%s: %s", k, v))
+		}
+
+		rows := [][]string{
+			{s.Id},
+			{fmt.Sprintf("Running: %v", s.Running), fmt.Sprintf("Healthy: %v", s.Healthy)},
+			ns,
+			es,
+		}
+		t.AppendRows(toTableRows(rows))
+		t.AppendSeparator()
+	}
+
+	t.SetStyle(table.StyleLight)
+	t.Render()
+}
+
 func getContainers(c *cli.Context) error {
 	client, err := checkParamsAndGetClient(c)
 	if err != nil {
@@ -431,30 +583,71 @@ func getContainers(c *cli.Context) error {
 		return cli.Exit(err, -1)
 	}
 
-	for _, container := range resp.GetContainers() {
-		log.Info("--------------------------------------")
-		log.Infof("%s: %s", container.Name, container.Id)
-		log.Infof("Pod: %s, Node: %s", container.Podname, container.Nodename)
-		log.Infof("CPU: %v, Quota: %v, Memory: %v, Storage: %v, Privileged %v", container.Cpu, container.Quota, container.Memory, container.Storage, container.Privileged)
-		for networkName, IP := range container.Publish {
-			log.Infof("Publish at %s ip %s", networkName, IP)
+	if c.Bool("pretty") {
+		prettyRenderContianers(resp.Containers)
+	} else {
+		for _, container := range resp.Containers {
+			renderContainer(container)
 		}
-		if len(container.StatusData) == 0 {
-			log.Warn("Container has no status data, maybe dissociate from eru.")
-			continue
+	}
+	return nil
+}
+
+func getContainersStatus(c *cli.Context) error {
+	client, err := checkParamsAndGetClient(c)
+	if err != nil {
+		return cli.Exit(err, -1)
+	}
+
+	resp, err := client.GetContainersStatus(context.Background(), &pb.ContainerIDs{Ids: c.Args().Slice()})
+	if err != nil {
+		return cli.Exit(err, -1)
+	}
+
+	if c.Bool("pretty") {
+		prettyRenderContainerStatus(resp.Status)
+	} else {
+		for _, containerStatus := range resp.Status {
+			renderContainerStatus(containerStatus)
 		}
-		meta := &coretypes.Meta{}
-		if err := json.Unmarshal(container.StatusData, meta); err != nil {
-			log.Errorf("Can't get container status %v", err)
+	}
+	return nil
+}
+
+func setContainersStatus(c *cli.Context) error {
+	client, err := checkParamsAndGetClient(c)
+	if err != nil {
+		return cli.Exit(err, -1)
+	}
+
+	running := c.Bool("running")
+	healthy := c.Bool("healthy")
+	ttl := c.Int64("ttl")
+	networks := makeLabels(c.StringSlice("network"))
+	extension := c.String("extension")
+	opts := &pb.SetContainersStatusOptions{Status: []*pb.ContainerStatus{}}
+	for _, ID := range c.Args().Slice() {
+		s := &pb.ContainerStatus{
+			Id:        ID,
+			Running:   running,
+			Healthy:   healthy,
+			Ttl:       ttl,
+			Networks:  networks,
+			Extension: []byte(extension),
 		}
-		if meta.Running {
-			log.Info("Container is Running")
-		}
-		if meta.Healthy {
-			log.Info("Container is Healthy")
-		}
-		if !meta.Running || !meta.Healthy {
-			log.Warn("Container is not running or healthy")
+		opts.Status = append(opts.Status, s)
+	}
+
+	resp, err := client.SetContainersStatus(context.Background(), opts)
+	if err != nil {
+		return cli.Exit(err, -1)
+	}
+
+	if c.Bool("pretty") {
+		prettyRenderContainerStatus(resp.Status)
+	} else {
+		for _, containerStatus := range resp.Status {
+			renderContainerStatus(containerStatus)
 		}
 	}
 	return nil
@@ -476,6 +669,7 @@ func listContainers(c *cli.Context) error {
 		return cli.Exit(err, -1)
 	}
 
+	containers := []*pb.Container{}
 	for {
 		container, err := resp.Recv()
 		if err == io.EOF {
@@ -484,20 +678,14 @@ func listContainers(c *cli.Context) error {
 		if err != nil {
 			return cli.Exit(err, -1)
 		}
-		log.Info("--------------------------------------")
-		log.Infof("%s: %s", container.Name, container.Id)
-		log.Infof("Pod: %s, Node: %s", container.Podname, container.Nodename)
-		log.Infof("CPU: %v, Quota: %v, Memory: %v, Storage: %v, Privileged %v", container.Cpu, container.Quota, container.Memory, container.Storage, container.Privileged)
-		log.Infof("Image: %s", container.Image)
-		if len(container.Publish) > 0 {
-			for nname, network := range container.Publish {
-				log.Infof("Publish at %s : %s", nname, network)
-			}
-		} else {
-			log.Warnf("Container not published")
-		}
-		if len(container.StatusData) == 0 {
-			log.Warn("Container has no status data, maybe dissociate from eru")
+		containers = append(containers, container)
+	}
+
+	if c.Bool("pretty") {
+		prettyRenderContianers(containers)
+	} else {
+		for _, container := range containers {
+			renderContainer(container)
 		}
 	}
 	return nil
@@ -512,8 +700,25 @@ func reallocContainers(c *cli.Context) error {
 	if err != nil {
 		return cli.Exit(err, -1)
 	}
+	volumes := []string{}
+	if v := c.String("volumes"); v != "" {
+		volumes = strings.Split(v, ",")
+	}
+	bindCPU := c.Bool("cpu-bind")
+	unbindCPU := c.Bool("cpu-unbind")
 
-	opts := &pb.ReallocOptions{Ids: c.Args().Slice(), Cpu: c.Float64("cpu"), Memory: memory}
+	if bindCPU && unbindCPU {
+		return cli.Exit(errors.New("cpu-bind and cpu-unbind can not both be set"), -1)
+	}
+	bindCPUOps := pb.BindCPUOpt_KEEP
+	if bindCPU {
+		bindCPUOps = pb.BindCPUOpt_BIND
+	}
+	if unbindCPU {
+		bindCPUOps = pb.BindCPUOpt_UNBIND
+	}
+
+	opts := &pb.ReallocOptions{Ids: c.Args().Slice(), Cpu: c.Float64("cpu"), Memory: memory, Volumes: volumes, BindCpuOpt: bindCPUOps}
 
 	resp, err := client.ReallocResource(context.Background(), opts)
 	if err != nil {
@@ -529,10 +734,10 @@ func reallocContainers(c *cli.Context) error {
 			return cli.Exit(err, -1)
 		}
 
-		if msg.Success {
-			log.Infof("[Realloc] Success %s", coreutils.ShortID(msg.Id))
+		if msg.Error != "" {
+			log.Errorf("[Realloc] Failed %s, error is %v", coreutils.ShortID(msg.Id), msg.Error)
 		} else {
-			log.Errorf("[Realloc] Failed %s", coreutils.ShortID(msg.Id))
+			log.Infof("[Realloc] Success %s", coreutils.ShortID(msg.Id))
 		}
 	}
 	return nil
@@ -578,8 +783,9 @@ func getContainerLog(c *cli.Context) error {
 	if err != nil {
 		return cli.Exit(err, -1)
 	}
+	tail := c.String("tail")
 
-	opts := &pb.ContainerID{Id: c.Args().First()}
+	opts := &pb.LogStreamOptions{Id: c.Args().First(), Tail: tail}
 	resp, err := client.LogStream(c.Context, opts)
 	if err != nil {
 		return cli.Exit(err, -1)

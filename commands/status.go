@@ -1,16 +1,16 @@
 package commands
 
 import (
-	"encoding/json"
 	"io"
+	"os"
+	"os/signal"
+	"syscall"
 
 	pb "github.com/projecteru2/core/rpc/gen"
-	"github.com/projecteru2/core/store"
-	coretypes "github.com/projecteru2/core/types"
 	coreutils "github.com/projecteru2/core/utils"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/net/context"
 	cli "github.com/urfave/cli/v2"
+	"golang.org/x/net/context"
 )
 
 func status(c *cli.Context) error {
@@ -19,16 +19,24 @@ func status(c *cli.Context) error {
 	entry := c.String("entry")
 	node := c.String("node")
 	labels := makeLabels(c.StringSlice("label"))
+	ctx, cancel := context.WithCancel(context.Background())
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		cancel()
+	}()
 
-	resp, err := client.DeployStatus(
-		context.Background(),
-		&pb.DeployStatusOptions{
+	resp, err := client.ContainerStatusStream(
+		ctx,
+		&pb.ContainerStatusStreamOptions{
 			Appname:    name,
 			Entrypoint: entry,
 			Nodename:   node,
+			Labels:     labels,
 		})
 	if err != nil || resp == nil {
-		cli.Exit("", -1)
+		return cli.Exit("", -1)
 	}
 
 	for {
@@ -38,38 +46,31 @@ func status(c *cli.Context) error {
 		}
 
 		if err != nil || msg == nil {
-			cli.Exit("", -1)
+			return cli.Exit("", -1)
 		}
 
-		if msg.Action == store.DeleteEvent {
-			log.Infof("[%s] %s_%s deleted", coreutils.ShortID(msg.Id), msg.Appname, msg.Entrypoint)
-			continue
-		}
-
-		meta := &coretypes.Meta{}
-		if len(msg.Data) > 0 {
-			if err := json.Unmarshal(msg.Data, meta); err != nil {
-				log.Errorf("[status] parse container data failed %v", err)
-				break
+		if msg.Error != "" {
+			if msg.Delete {
+				log.Warnf("%s deleted", coreutils.ShortID(msg.Id))
+			} else {
+				log.Errorf("[%s] status changed with error %v", coreutils.ShortID(msg.Id), msg.Error)
 			}
-		}
-
-		if !coreutils.FilterContainer(meta.Labels, labels) {
-			log.Debugf("[status] ignore container %s", msg.Id)
 			continue
 		}
 
-		if meta.Healthy {
-			log.Infof("[%s] %s_%s on %s back to life", coreutils.ShortID(msg.Id), msg.Appname, msg.Entrypoint, msg.Nodename)
-			containerMeta := coreutils.DecodeMetaInLabel(meta.Labels)
-			publish := coreutils.MakePublishInfo(meta.Networks, containerMeta.Publish)
-			for networkName, addrs := range publish {
+		if msg.Delete {
+			log.Warnf("[%s] %s status expired", coreutils.ShortID(msg.Id), msg.Container.Name)
+		}
+
+		if !msg.Status.Running {
+			log.Warnf("[%s] %s on %s is stopped", coreutils.ShortID(msg.Id), msg.Container.Name, msg.Container.Nodename)
+		} else if !msg.Status.Healthy {
+			log.Warnf("[%s] %s on %s is unhealthy", coreutils.ShortID(msg.Id), msg.Container.Name, msg.Container.Nodename)
+		} else if msg.Status.Running && msg.Status.Healthy {
+			log.Infof("[%s] %s back to life", coreutils.ShortID(msg.Container.Id), msg.Container.Name)
+			for networkName, addrs := range msg.Container.Publish {
 				log.Infof("[%s] published at %s bind %v", coreutils.ShortID(msg.Id), networkName, addrs)
 			}
-		} else if !meta.Running {
-			log.Warnf("[%s] %s_%s on %s is stopped", coreutils.ShortID(msg.Id), msg.Appname, msg.Entrypoint, msg.Nodename)
-		} else if !meta.Healthy {
-			log.Warnf("[%s] %s_%s on %s is unhealthy", coreutils.ShortID(msg.Id), msg.Appname, msg.Entrypoint, msg.Nodename)
 		}
 	}
 	return nil

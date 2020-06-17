@@ -1,9 +1,10 @@
-Cli
+CLI
 =====
-[![CircleCI](https://circleci.com/gh/projecteru2/cli.svg?style=shield)](https://circleci.com/gh/projecteru2/cli)
-[![Codacy Badge](https://api.codacy.com/project/badge/Grade/c4328f07835a43148ef8d2a87dbe5c85)](https://www.codacy.com/app/projecteru2/cli?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=projecteru2/cli&amp;utm_campaign=Badge_Grade)
+![](https://github.com/projecteru2/cli/workflows/goreleaser/badge.svg)
+![](https://github.com/projecteru2/cli/workflows/golangci-lint/badge.svg)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/e9a4c445afb549fea950b4353197e859)](https://www.codacy.com/gh/projecteru2/cli?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=projecteru2/cli&amp;utm_campaign=Badge_Grade)
 
-cli for Eru.
+CLI for Eru.
 
 Modify resources for eru pods / nodes, manipulate containers and images.
 
@@ -16,27 +17,31 @@ Modify resources for eru pods / nodes, manipulate containers and images.
 		* `container remove {id} ...`
 		* `container realloc --cpu {cpu} --memory {memory}`
 		* `container deploy`
+        * `container set-status`
+        * `container get-status`
 	* `pod` subcommands:
 		* `pod list`
 		* `pod add`
 		* `pod nodes {podname}`
 		* `pod networks {podname}`
+        * `pod resource {podname}`
 	* `node` subcommands:
 		* `node get {nodename}`
 		* `node remove {nodename}`
 		* `node set-status [--available] {nodename}`
+        * `node resource {nodename}`
 	* `image` subcommands:
 		* `image build`
 	* `lambda`
 
 ### Develop
 
+We use `go mod` to manage requirements.  
 Start developing:
 
 ```
-go get github.com/projecteru2/cli
-cd $GOPATH/src/github.com/projecteru2/cli
-make deps
+$ git clone github.com/projecteru2/cli
+$ make test binary
 ```
 
 Commands' source code in `commands` dir, you can define your own commands inside. Use `make test` to test and `make build` to build. If you want to modify and build in local, you can use `make deps` to generate vendor dirs.

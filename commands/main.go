@@ -75,13 +75,19 @@ func GlobalFlags() []cli.Flag {
 			EnvVars:     []string{"ERU_PASSWORD"},
 			Destination: &password,
 		},
+		&cli.BoolFlag{
+			Name:    "pretty",
+			Usage:   "use table to output",
+			Value:   false,
+			EnvVars: []string{"ERU_PRETTY_PRINT"},
+		},
 	}
 }
 
 func setupAndGetGRPCConnection() *client.Client {
-	setupLog("INFO")
+	_ = setupLog("INFO")
 	if debug {
-		setupLog("DEBUG")
+		_ = setupLog("DEBUG")
 	}
 
 	return client.NewClient(eru, types.AuthConfig{Username: username, Password: password})
